@@ -17,9 +17,8 @@ class GameEngine:
         self.player = Player(80, self.ground_y)
 
         self.speed = 6
-        # NOTE: speed keeps climbing every frame with no ceiling. See
-        # Task 1 in the README for why that eventually breaks collision.
         self.speed_increase_per_frame = 0.003
+        self.max_speed = 12
 
         self.spawn_interval = 70  # frames between obstacle spawns
         self._spawn_timer = 0
@@ -43,7 +42,10 @@ class GameEngine:
         if self.game_over:
             return
 
-        self.speed += self.speed_increase_per_frame
+        self.speed = min(
+        self.speed + self.speed_increase_per_frame,
+        self.max_speed
+        )
         self.player.update()
 
         self._spawn_timer += 1
@@ -51,9 +53,12 @@ class GameEngine:
             self._spawn_timer = 0
             self.obstacles.append(Obstacle(self.width, self.ground_y, self.speed))
 
+        previous_positions = {}
+
         for obstacle in self.obstacles:
-            obstacle.move()
+            previous_positions[id(obstacle)] = obstacle.x
             obstacle.speed = self.speed
+            obstacle.move()
 
         # NOTE: collision is only checked against each obstacle's rect
         # *after* it has already moved for the frame. There's no check
@@ -64,11 +69,24 @@ class GameEngine:
         # entirely to the right of the player on one frame and entirely
         # to the left on the next, skipping the player's hitbox
         # completely and never registering a hit. See Task 1.
+        player_rect = self.player.rect()
+
         for obstacle in self.obstacles:
-            if obstacle.rect().colliderect(self.player.rect()):
+            previous_x = previous_positions[id(obstacle)]
+
+            left = min(previous_x, obstacle.x)
+            travelled = abs(obstacle.x - previous_x)
+
+            swept_rect = pygame.Rect(
+                int(left),
+                obstacle.y,
+                obstacle.width + int(travelled) + 1,
+                obstacle.height
+            )
+
+            if swept_rect.colliderect(player_rect):
                 self.game_over = True
                 return
-
         for obstacle in self.obstacles:
             if not obstacle.scored and obstacle.x + obstacle.width < self.player.x:
                 obstacle.scored = True
