@@ -13,6 +13,13 @@ class GameEngine:
         self.width = width
         self.height = height
         self.ground_y = height - 40
+        self.difficulties = {
+        "Easy": (4, 90),
+        "Medium": (6, 70),
+        "Hard": (8, 50)
+        }
+        self.difficulty = "Medium"
+        self.small_font = pygame.font.SysFont("Arial", 22)
 
         self.player = Player(80, self.ground_y)
 
@@ -30,8 +37,45 @@ class GameEngine:
         self.title_font = pygame.font.SysFont("Arial", 48, bold=True)
         self.game_over = False
         self._game_over_logged = False
+    
+    def reset_game(self, difficulty):
+        self.difficulty = difficulty
+
+        starting_speed, self.spawn_interval = (
+            self.difficulties[difficulty]
+        )
+
+        self.player = Player(80, self.ground_y)
+        self.speed = starting_speed
+        self._spawn_timer = 0
+        self.obstacles = []
+        self.distance = 0
+        self.score = 0
+        self.game_over = False
+        self._game_over_logged = False
+
     def handle_event(self, event):
-        if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_UP, pygame.K_w):
+        if event.type != pygame.KEYDOWN:
+            return
+
+        if self.game_over:
+            if event.key == pygame.K_1:
+                self.reset_game("Easy")
+            elif event.key == pygame.K_2:
+                self.reset_game("Medium")
+            elif event.key == pygame.K_3:
+                self.reset_game("Hard")
+            elif event.key in (pygame.K_4, pygame.K_ESCAPE):
+                pygame.event.post(
+                    pygame.event.Event(pygame.QUIT)
+                )
+            return
+
+        if event.key in (
+            pygame.K_SPACE,
+            pygame.K_UP,
+            pygame.K_w
+        ):
             self.player.jump()
 
     def handle_input(self):
@@ -146,7 +190,26 @@ class GameEngine:
 
             # Exit message
             message = pygame.font.SysFont("Arial", 20).render(
-                "Close the window to exit",
+                options = [
+                    ("1 - EASY", (80, 220, 100)),
+                    ("2 - MEDIUM", (100, 180, 255)),
+                    ("3 - HARD", (255, 100, 100)),
+                    ("4 - EXIT", (255, 255, 255))
+                ]
+
+                for i, (label, color) in enumerate(options):
+                    option = self.small_font.render(
+                        label, True, color
+                    )
+
+                    option_rect = option.get_rect(
+                        center=(
+                            self.width // 2,
+                            self.height // 2 + 65 + i * 32
+                        )
+                    )
+
+                    screen.blit(option, option_rect)
                 True, (255, 255, 255)
             )
             message_rect = message.get_rect(
