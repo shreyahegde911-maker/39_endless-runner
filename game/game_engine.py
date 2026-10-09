@@ -1,25 +1,47 @@
+
+import io
+import math
+import struct
+import wave
 import pygame
+
 from .player import Player
 from .obstacle import Obstacle
 
-# Game Engine
 
+# ---------- COLOURS ----------
+BACKGROUND = (189, 235, 255)
+GROUND_GREEN = (35, 134, 54)
+PLAYER_BLUE = (21, 94, 239)
+OBSTACLE_ORANGE = (249, 115, 22)
+TEXT_DARK = (25, 40, 65)
 WHITE = (255, 255, 255)
-BROWN = (120, 80, 40)
-DARK_GREEN = (30, 100, 30)
+RED = (255, 85, 85)
+DARK_OVERLAY = (15, 25, 45, 220)
+
 
 class GameEngine:
     def __init__(self, width, height):
         self.width = width
         self.height = height
         self.ground_y = height - 40
+
+        # Starting speed and obstacle spawn interval
         self.difficulties = {
-        "Easy": (4, 90),
-        "Medium": (6, 70),
-        "Hard": (8, 50)
+            "Easy": (4, 90),
+            "Medium": (6, 70),
+            "Hard": (8, 50),
         }
+
         self.difficulty = "Medium"
-        self.small_font = pygame.font.SysFont("Arial", 22)
+
+        self.font = pygame.font.SysFont("Arial", 28, bold=True)
+        self.title_font = pygame.font.SysFont(
+            "Arial", 46, bold=True
+        )
+        self.small_font = pygame.font.SysFont("Arial", 21)
+
+        self.init_sounds()
 
         self.player = Player(80, self.ground_y)
 
@@ -27,32 +49,90 @@ class GameEngine:
         self.speed_increase_per_frame = 0.003
         self.max_speed = 12
 
-        self.spawn_interval = 70  # frames between obstacle spawns
+        self.spawn_interval = 70
         self._spawn_timer = 0
         self.obstacles = []
 
         self.distance = 0
         self.score = 0
-        self.font = pygame.font.SysFont("Arial", 30)
-        self.title_font = pygame.font.SysFont("Arial", 48, bold=True)
         self.game_over = False
-        self._game_over_logged = False
-    
+
+    # ---------- SOUND EFFECTS ----------
+
+    def init_sounds(self):
+        self.sounds = {}
+
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+
+            self.sounds["jump"] = self.create_tone(550, 0.10)
+            self.sounds["score"] = self.create_tone(850, 0.12)
+            self.sounds["game_over"] = self.create_tone(180, 0.30)
+
+        except (pygame.error, OSError):
+            # The game remains playable without sound.
+            self.sounds = {}
+
+    def create_tone(self, frequency, duration):
+        sample_rate = 22050
+        amplitude = 9000
+        count = int(sample_rate * duration)
+        samples = bytearray()
+
+        for i in range(count):
+            fade = max(
+                0.0,
+                min(1.0, i / 300, (count - i) / 500)
+            )
+
+            value = int(
+                amplitude
+                * fade
+                * math.sin(
+                    2 * math.pi * frequency * i / sample_rate
+                )
+            )
+
+            samples.extend(struct.pack("<h", value))
+
+        buffer = io.BytesIO()
+
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(bytes(samples))
+
+        buffer.seek(0)
+        return pygame.mixer.Sound(file=buffer)
+
+    def play_sound(self, name):
+        sound = self.sounds.get(name)
+
+        if sound is not None:
+            try:
+                sound.play()
+            except pygame.error:
+                pass
+
+    # ---------- RESTART GAME ----------
+
     def reset_game(self, difficulty):
         self.difficulty = difficulty
 
-        starting_speed, self.spawn_interval = (
+        self.speed, self.spawn_interval = (
             self.difficulties[difficulty]
         )
 
         self.player = Player(80, self.ground_y)
-        self.speed = starting_speed
         self._spawn_timer = 0
         self.obstacles = []
         self.distance = 0
         self.score = 0
         self.game_over = False
-        self._game_over_logged = False
+
+    # ---------- KEYBOARD CONTROLS ----------
 
     def handle_event(self, event):
         if event.type != pygame.KEYDOWN:
@@ -69,35 +149,45 @@ class GameEngine:
                 pygame.event.post(
                     pygame.event.Event(pygame.QUIT)
                 )
+
             return
 
         if event.key in (
             pygame.K_SPACE,
             pygame.K_UP,
-            pygame.K_w
+            pygame.K_w,
         ):
-            self.player.jump()
+            if self.player.on_ground:
+                self.player.jump()
+                self.play_sound("jump")
 
     def handle_input(self):
-        # Reserved for continuously-held-key input; this runner only
-        # needs an edge-triggered jump, handled in handle_event.
         pass
+
+    # ---------- UPDATE GAME ----------
 
     def update(self):
         if self.game_over:
             return
 
+        # Increase speed gradually, with a maximum limit.
         self.speed = min(
-        self.speed + self.speed_increase_per_frame,
-        self.max_speed
+            self.speed + self.speed_increase_per_frame,
+            self.max_speed,
         )
+
         self.player.update()
 
+        # Spawn obstacles at regular intervals.
         self._spawn_timer += 1
+
         if self._spawn_timer >= self.spawn_interval:
             self._spawn_timer = 0
-            self.obstacles.append(Obstacle(self.width, self.ground_y, self.speed))
+            self.obstacles.append(
+                Obstacle(self.width, self.ground_y, self.speed)
+            )
 
+        # Save positions before movement for collision checking.
         previous_positions = {}
 
         for obstacle in self.obstacles:
@@ -105,17 +195,10 @@ class GameEngine:
             obstacle.speed = self.speed
             obstacle.move()
 
-        # NOTE: collision is only checked against each obstacle's rect
-        # *after* it has already moved for the frame. There's no check
-        # for whether the obstacle's path crossed the player along the
-        # way. Since self.speed has no cap, it eventually grows large
-        # enough that an obstacle can cover more horizontal distance
-        # in one frame than the player's own width - meaning it can be
-        # entirely to the right of the player on one frame and entirely
-        # to the left on the next, skipping the player's hitbox
-        # completely and never registering a hit. See Task 1.
         player_rect = self.player.rect()
 
+        # Swept collision detection prevents fast obstacles
+        # from skipping over the player between frames.
         for obstacle in self.obstacles:
             previous_x = previous_positions[id(obstacle)]
 
@@ -126,95 +209,153 @@ class GameEngine:
                 int(left),
                 obstacle.y,
                 obstacle.width + int(travelled) + 1,
-                obstacle.height
+                obstacle.height,
             )
 
             if swept_rect.colliderect(player_rect):
                 self.game_over = True
+                self.play_sound("game_over")
                 return
+
+        # Award a point for each obstacle passed.
         for obstacle in self.obstacles:
-            if not obstacle.scored and obstacle.x + obstacle.width < self.player.x:
+            if (
+                not obstacle.scored
+                and obstacle.x + obstacle.width < self.player.x
+            ):
                 obstacle.scored = True
                 self.score += 1
+                self.play_sound("score")
 
-        self.obstacles = [o for o in self.obstacles if not o.off_screen()]
+        self.obstacles = [
+            obstacle
+            for obstacle in self.obstacles
+            if not obstacle.off_screen()
+        ]
 
         self.distance += self.speed
-    
+
+    # ---------- DRAW GAME ----------
+
     def render(self, screen):
+        # Sky background
+        screen.fill(BACKGROUND)
+
+        # Ground
+        pygame.draw.rect(
+            screen,
+            GROUND_GREEN,
+            (0, self.ground_y, self.width,
+             self.height - self.ground_y),
+        )
+
         pygame.draw.line(
-            screen, BROWN,
+            screen,
+            (25, 105, 45),
             (0, self.ground_y),
-            (self.width, self.ground_y), 4
+            (self.width, self.ground_y),
+            3,
         )
 
-        pygame.draw.rect(screen, WHITE, self.player.rect())
+        # Player
+        pygame.draw.rect(
+            screen,
+            PLAYER_BLUE,
+            self.player.rect(),
+            border_radius=5,
+        )
 
+        # Obstacles
         for obstacle in self.obstacles:
-            pygame.draw.rect(screen, DARK_GREEN, obstacle.rect())
+            pygame.draw.rect(
+                screen,
+                OBSTACLE_ORANGE,
+                obstacle.rect(),
+                border_radius=5,
+            )
 
-        # Display current score
+        # Score panel
+        score_panel = pygame.Surface((170, 48), pygame.SRCALPHA)
+        score_panel.fill((255, 255, 255, 205))
+        screen.blit(score_panel, (10, 10))
+
         score_text = self.font.render(
-            f"Score: {self.score}", True, (0, 0, 0)
+            f"Score: {self.score}",
+            True,
+            TEXT_DARK,
         )
-        screen.blit(score_text, (10, 10))
+        screen.blit(score_text, (20, 17))
 
-        # Game Over screen
+        # Game Over screen and replay menu
         if self.game_over:
-            # Dark transparent overlay
             overlay = pygame.Surface(
                 (self.width, self.height),
-                pygame.SRCALPHA
+                pygame.SRCALPHA,
             )
-            overlay.fill((0, 0, 0, 170))
+            overlay.fill(DARK_OVERLAY)
             screen.blit(overlay, (0, 0))
 
-            # Game Over title
             title = self.title_font.render(
-                "GAME OVER", True, (255, 60, 60)
+                "GAME OVER", True, RED
             )
-            title_rect = title.get_rect(
-                center=(self.width // 2, self.height // 2 - 50)
+            screen.blit(
+                title,
+                title.get_rect(
+                    center=(
+                        self.width // 2,
+                        self.height // 2 - 105,
+                    )
+                ),
             )
-            screen.blit(title, title_rect)
 
-            # Final score
             final_score = self.font.render(
                 f"Final Score: {self.score}",
-                True, (255, 255, 255)
+                True,
+                WHITE,
             )
-            score_rect = final_score.get_rect(
-                center=(self.width // 2, self.height // 2 + 10)
-            )
-            screen.blit(final_score, score_rect)
-
-            # Exit message
-            message = pygame.font.SysFont("Arial", 20).render(
-                options = [
-                    ("1 - EASY", (80, 220, 100)),
-                    ("2 - MEDIUM", (100, 180, 255)),
-                    ("3 - HARD", (255, 100, 100)),
-                    ("4 - EXIT", (255, 255, 255))
-                ]
-
-                for i, (label, color) in enumerate(options):
-                    option = self.small_font.render(
-                        label, True, color
+            screen.blit(
+                final_score,
+                final_score.get_rect(
+                    center=(
+                        self.width // 2,
+                        self.height // 2 - 50,
                     )
+                ),
+            )
 
-                    option_rect = option.get_rect(
+            message = self.small_font.render(
+                "Choose your difficulty",
+                True,
+                WHITE,
+            )
+            screen.blit(
+                message,
+                message.get_rect(
+                    center=(
+                        self.width // 2,
+                        self.height // 2 - 10,
+                    )
+                ),
+            )
+
+            options = [
+                ("1  -  EASY", (100, 255, 150)),
+                ("2  -  MEDIUM", (120, 200, 255)),
+                ("3  -  HARD", (255, 150, 100)),
+                ("4  -  EXIT", WHITE),
+            ]
+
+            for i, (label, color) in enumerate(options):
+                option = self.small_font.render(
+                    label, True, color
+                )
+
+                screen.blit(
+                    option,
+                    option.get_rect(
                         center=(
                             self.width // 2,
-                            self.height // 2 + 65 + i * 32
+                            self.height // 2 + 30 + i * 32,
                         )
-                    )
-
-                    screen.blit(option, option_rect)
-                True, (255, 255, 255)
-            )
-            message_rect = message.get_rect(
-                center=(self.width // 2, self.height // 2 + 55)
-            )
-            screen.blit(message, message_rect)
-
-    
+                    ),
+                )
